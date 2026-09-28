@@ -1,0 +1,283 @@
+openapi: 3.0.3
+info:
+  title: Probatiq, réglages des projets par programme
+  version: "1.0"
+  description: |
+    API de paramétrage d'un projet Jira équipé de Probatiq (webtrigger « probatiq-reglages-api »).
+    Elle lit et règle, pour un projet du site, la colonne d'analyse, la livraison (dépôt GitHub,
+    branche, URL de l'application testée, plan de charge) et la colonne de fusion avec son rôle,
+    avec les mêmes contrôles et les mêmes refus que l'écran du projet.
+
+    Par conception, elle ne touche jamais à l'exécuteur, aux secrets, aux packs de normes ni à
+    l'exploration, et ne déclenche aucune analyse.
+
+    Adresse : propre à chaque site, affichée sur la page « Exécuteur Probatiq »,
+    carte « Accès API aux réglages des projets ». Il n'y a qu'une seule route : POST sur cette adresse.
+    Accès : délivré sur la même carte par un administrateur du site ; valeur préfixée « pqa_ »,
+    affichée une seule fois, valable pour tous les projets du site jusqu'à sa révocation.
+
+servers:
+  - url: "{adresse}"
+    description: Adresse affichée sur la carte « Accès API aux réglages des projets » de votre site.
+    variables:
+      adresse:
+        default: https://ADRESSE-AFFICHEE-SUR-LA-CARTE
+
+security:
+  - accesProbatiq: []
+
+paths:
+  /:
+    post:
+      summary: Lire ou régler un projet
+      description: |
+        Une opération par appel, désignée par le champ « operation ». Corps JSON de 16 Ko au plus.
+        Au plus 30 appels refusés sans accès reconnu par tranche de 10 minutes, puis refus systématique.
+      operationId: reglerProjet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/LireEtat"
+                - $ref: "#/components/schemas/EnregistrerColonne"
+                - $ref: "#/components/schemas/RetirerColonne"
+                - $ref: "#/components/schemas/EnregistrerCibles"
+                - $ref: "#/components/schemas/RetirerCibles"
+                - $ref: "#/components/schemas/DesactiverPlan"
+                - $ref: "#/components/schemas/RetablirPlanParDefaut"
+                - $ref: "#/components/schemas/EnregistrerFusionJira"
+                - $ref: "#/components/schemas/RetirerFusionJira"
+              discriminator:
+                propertyName: operation
+            examples:
+              lireEtat:
+                value: { "operation": "lireEtat", "projet": "PROJ" }
+              enregistrerColonne:
+                value: { "operation": "enregistrerColonne", "projet": "PROJ", "statutNom": "In Review" }
+              enregistrerCibles:
+                value: { "operation": "enregistrerCibles", "projet": "PROJ", "depot": "mon-organisation/mon-depot", "branche": "main", "url": "https://adresse-de-l-application" }
+              enregistrerCiblesAvecPlan:
+                value: { "operation": "enregistrerCibles", "projet": "PROJ", "depot": "mon-organisation/mon-depot", "branche": "main", "url": "https://adresse-de-l-application", "plan": "tests/charge/plan-du-projet.jmx" }
+              enregistrerFusionJira:
+                value: { "operation": "enregistrerFusionJira", "projet": "PROJ", "statutNom": "Done", "roleNom": "Administrators" }
+              retirerCibles:
+                value: { "operation": "retirerCibles", "projet": "PROJ" }
+      responses:
+        "200":
+          description: Opération acceptée. La réponse porte l'état du projet après l'opération.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EtatProjet"
+        "400":
+          description: Corps illisible, ou opération inconnue (la réponse liste alors les opérations).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Refus"
+              example: { "ok": false, "erreur": "opération inconnue", "operations": ["lireEtat", "enregistrerColonne", "retirerColonne", "enregistrerCibles", "retirerCibles", "desactiverPlan", "retablirPlanParDefaut", "enregistrerFusionJira", "retirerFusionJira"] }
+        "401":
+          description: |
+            Réponse unique, volontairement indistincte : accès absent, invalide, révoqué, délivré sur un autre
+            site, ou projet inconnu ou non visible par l'app.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Refus"
+              example: { "ok": false, "erreur": "Accès refusé : accès absent, invalide, ou projet inconnu." }
+        "422":
+          description: Réglage refusé. Le motif est celui qu'afficherait l'écran du projet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Refus"
+              example: { "ok": false, "erreur": "Colonne de fusion inconnue sur le board du projet." }
+        "500":
+          description: Panne temporaire (Jira ou stockage). Réessayer plus tard.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Refus"
+              example: { "ok": false, "erreur": "Erreur temporaire : réessayez plus tard." }
+
+components:
+  securitySchemes:
+    accesProbatiq:
+      type: http
+      scheme: bearer
+      description: "En-tête « Authorization: Bearer pqa_… ». Valeur délivrée sur la carte « Accès API aux réglages des projets »."
+
+  schemas:
+    CleProjet:
+      type: string
+      pattern: "^[A-Z][A-Z0-9_]{0,31}$"
+      description: Clé du projet Jira, telle qu'elle apparaît devant le numéro des tickets.
+      example: PROJ
+
+    Base:
+      type: object
+      required: [operation, projet]
+      properties:
+        operation:
+          type: string
+          enum: [lireEtat, enregistrerColonne, retirerColonne, enregistrerCibles, retirerCibles, desactiverPlan, retablirPlanParDefaut, enregistrerFusionJira, retirerFusionJira]
+        projet:
+          $ref: "#/components/schemas/CleProjet"
+
+    LireEtat:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Lit l'état du projet sans rien changer.
+
+    EnregistrerColonne:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+        - type: object
+          description: |
+            Désigne la colonne du board dont l'entrée déclenche l'analyse. Par identifiant (statutId) ou par nom
+            exact (statutNom), tel que Jira le donne à l'app, souvent en anglais. Un nom ambigu est refusé.
+            Refusée si la colonne est déjà la colonne de fusion ou de clôture du projet.
+          properties:
+            statutId: { type: string, example: "10001" }
+            statutNom: { type: string, example: "In Review" }
+
+    RetirerColonne:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Retire la colonne d'analyse. Le projet ne déclenche plus rien.
+
+    EnregistrerCibles:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+        - type: object
+          required: [depot, url]
+          description: |
+            Désigne la livraison. Le dépôt et l'URL sont obligatoires ensemble. Changer d'application (hôte ou
+            chemin de l'URL) efface la fiche de l'application apprise par les jobs précédents.
+          properties:
+            depot:
+              type: string
+              description: Dépôt GitHub de livraison, sous la forme propriétaire/dépôt.
+              example: mon-organisation/mon-depot
+            branche:
+              type: string
+              description: Branche de base des pull requests. « main » si absente.
+              default: main
+            url:
+              type: string
+              format: uri
+              description: URL de l'application testée. Transport chiffré (https) obligatoire.
+              example: https://adresse-de-l-application
+            plan:
+              type: string
+              description: |
+                Chemin, dans le dépôt, du plan de charge du projet que Probatiq complète ticket après ticket.
+                Absent : chemin par défaut du pack (par exemple tests/charge/plan-du-projet.jmx pour jmeter).
+              example: tests/charge/plan-du-projet.jmx
+
+    RetirerCibles:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Retire le dépôt, la branche, l'URL et le chemin du plan. Une désactivation du plan est conservée.
+
+    DesactiverPlan:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Désactive le plan de charge du projet. Les tickets suivants livrent un fichier séparé.
+
+    RetablirPlanParDefaut:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Réactive le plan de charge au chemin par défaut du pack, en oubliant un chemin désigné.
+
+    EnregistrerFusionJira:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+        - type: object
+          description: |
+            Désigne la colonne dont l'entrée, par une personne du rôle indiqué, fusionne la pull request du
+            ticket. Colonne et rôle par identifiant ou par nom exact. Refusée si la colonne est la colonne d'analyse.
+          properties:
+            statutId: { type: string, example: "10002" }
+            statutNom: { type: string, example: "Done" }
+            roleId: { type: string, example: "10003" }
+            roleNom: { type: string, example: "Administrators" }
+
+    RetirerFusionJira:
+      allOf:
+        - $ref: "#/components/schemas/Base"
+      description: Retire la colonne de fusion. Plus aucune fusion depuis Jira.
+
+    Refus:
+      type: object
+      required: [ok, erreur]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        erreur: { type: string }
+        operations:
+          type: array
+          items: { type: string }
+          description: Présent seulement sur un 400 pour opération inconnue.
+
+    Etat:
+      type: object
+      description: État calculé d'un réglage, avec son libellé lisible.
+      properties:
+        etat: { type: string }
+        libelle: { type: string }
+
+    EtatProjet:
+      type: object
+      description: État du projet en liste fermée. Ne porte jamais de secret, ni l'adresse du retour de fusion, ni l'identifiant d'installation.
+      required: [ok, projet]
+      properties:
+        ok: { type: boolean, enum: [true] }
+        projet:
+          $ref: "#/components/schemas/CleProjet"
+        colonneAnalyse:
+          nullable: true
+          type: object
+          properties:
+            statutId: { type: string }
+            statutNom: { type: string }
+        etatColonneAnalyse:
+          $ref: "#/components/schemas/Etat"
+        cibles:
+          nullable: true
+          type: object
+          properties:
+            depot: { type: string }
+            branche: { type: string }
+            url: { type: string }
+            plan: { type: string, description: Chemin désigné, présent seulement s'il a été fourni. }
+            planDesactive: { type: boolean, description: Présent et vrai seulement si le plan est désactivé. }
+        etatCibles:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Etat"
+            - type: object
+              properties:
+                plan:
+                  $ref: "#/components/schemas/Etat"
+        colonneFusion:
+          nullable: true
+          type: object
+          properties:
+            statutId: { type: string }
+            statutNom: { type: string }
+            roleId: { type: string }
+            roleNom: { type: string }
+        etatFusionJira:
+          nullable: true
+          $ref: "#/components/schemas/Etat"
+      example:
+        ok: true
+        projet: PROJ
+        colonneAnalyse: { statutId: "10001", statutNom: "In Review" }
+        etatColonneAnalyse: { etat: "active", libelle: "Analyse déclenchée à l'entrée dans « In Review »" }
+        cibles: { depot: "mon-organisation/mon-depot", branche: "main", url: "https://adresse-de-l-application" }
+        etatCibles: { etat: "active", libelle: "Livraison vers mon-organisation/mon-depot (main)", plan: { etat: "defaut", libelle: "Plan du projet au chemin par défaut du pack" } }
+        colonneFusion: { statutId: "10002", statutNom: "Done", roleId: "10003", roleNom: "Administrators" }
+        etatFusionJira: { etat: "active", libelle: "Fusion depuis Jira par les membres du rôle Administrators" }
